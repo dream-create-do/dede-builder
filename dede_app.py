@@ -1,366 +1,167 @@
 """
-dede_app.py — DeDe Course Builder Agent v2.0
-Web interface for building Canvas IMSCC files from MeMe Blueprint documents.
-Supports FULL BUILD and UPDATE modes.
+dede_app.py — DeDe Course Builder v4.0
+Accepts original IMSCC + MeMe's GMO + design style selection.
 """
 
 import streamlit as st
-import io
-import os
-import sys
-import traceback
+import os, sys, traceback
 
-# ── Page config ─────────────────────────────────────────────────
-st.set_page_config(
-    page_title="DeDe Course Builder",
-    page_icon="🏗️",
-    layout="centered",
-)
+st.set_page_config(page_title="DeDe — Course Builder", page_icon="🏗️", layout="centered")
 
-# ── Import the build engine ─────────────────────────────────────
 try:
-    from build import (
-        parse_blueprint,
-        resolve_all_dates,
-        validate_blueprint,
-        build_imscc,
-    )
+    from dede_engine import run_dede, read_imscc, parse_gmo, LLM_ACTIONS
     from style_templates import STYLES
 except ImportError as e:
-    st.error(f"Could not load build engine: {e}")
+    st.error(f"Could not load DeDe engine: {e}")
     st.stop()
 
-
-# ── Styles (matches CeCe's theme) ──────────────────────────────
 st.markdown("""
 <style>
-    .header-bar {
-        background: linear-gradient(135deg, #2c3e50, #3498db);
-        border-radius: 12px;
-        padding: 2rem 2rem 1.5rem 2rem;
-        margin-bottom: 1.5rem;
-        text-align: center;
-        color: white;
-    }
-    .header-bar h1 {
-        font-size: 2.4rem;
-        font-weight: 800;
-        margin: 0;
-        letter-spacing: -1px;
-    }
-    .header-bar p {
-        margin: 0.3rem 0 0 0;
-        opacity: 0.85;
-        font-size: 1rem;
-    }
-    .stat-card {
-        background: #f0f4ff;
-        border: 1px solid #d0d8f0;
-        border-radius: 10px;
-        padding: 1rem;
-        text-align: center;
-    }
-    .stat-number {
-        font-size: 2rem;
-        font-weight: 700;
-        color: #2c3e50;
-        line-height: 1;
-    }
-    .stat-label {
-        font-size: 0.8rem;
-        color: #666;
-        margin-top: 4px;
-    }
-    .section-header {
-        font-size: 0.85rem;
-        font-weight: 700;
-        text-transform: uppercase;
-        letter-spacing: 1px;
-        color: #888;
-        margin: 1.5rem 0 0.5rem 0;
-    }
-    .badge-ok      { background:#d4edda; color:#155724; padding:3px 10px; border-radius:20px; font-size:0.85rem; font-weight:600; }
-    .badge-warn    { background:#fff3cd; color:#856404; padding:3px 10px; border-radius:20px; font-size:0.85rem; font-weight:600; }
-    .badge-error   { background:#f8d7da; color:#721c24; padding:3px 10px; border-radius:20px; font-size:0.85rem; font-weight:600; }
-    .stDownloadButton > button {
-        background: #2c3e50 !important;
-        color: white !important;
-        border: none !important;
-        border-radius: 8px !important;
-        font-weight: 600 !important;
-        padding: 0.6rem 2rem !important;
-        font-size: 1rem !important;
-        width: 100%;
-    }
-    .stDownloadButton > button:hover {
-        background: #3498db !important;
-    }
+    @import url('https://fonts.googleapis.com/css2?family=Lexend:wght@300;400;500;600;700&display=swap');
+    html, body, [class*="css"] { font-family: 'Lexend', sans-serif !important; }
+    .header-bar { background: linear-gradient(135deg, #6c5ce7, #a855f7, #ff6b9d); border-radius: 16px; padding: 2rem; margin-bottom: 1.5rem; text-align: center; color: white; }
+    .header-bar h1 { font-size: 2.2rem; font-weight: 700; margin: 0; letter-spacing: 2px; }
+    .header-bar p { margin: 0.25rem 0 0 0; opacity: 0.85; font-size: 0.9rem; font-weight: 300; letter-spacing: 1.5px; text-transform: uppercase; }
+    .stat-card { background: #f8f9fa; border-radius: 8px; padding: 10px; text-align: center; }
+    .stat-number { font-size: 22px; font-weight: 700; color: #6c5ce7; line-height: 1; }
+    .stat-label { font-size: 11px; color: #888; margin-top: 4px; }
+    .section-header { font-size: 11px; font-weight: 600; text-transform: uppercase; letter-spacing: 1.2px; color: #888; margin: 1.5rem 0 0.5rem 0; }
+    .stButton > button[kind="primary"], .stDownloadButton > button {
+        background: linear-gradient(135deg, #6c5ce7, #a855f7) !important; color: white !important;
+        border: none !important; border-radius: 10px !important; font-family: 'Lexend', sans-serif !important;
+        font-weight: 600 !important; padding: 0.75rem 2rem !important; font-size: 15px !important; width: 100%; }
     footer { visibility: hidden; }
     #MainMenu { visibility: hidden; }
 </style>
 """, unsafe_allow_html=True)
 
-
-# ── Header ──────────────────────────────────────────────────────
 st.markdown("""
 <div class="header-bar">
     <h1>🏗️ DeDe</h1>
-    <p>Course Builder Agent &nbsp;·&nbsp; Builds Canvas IMSCC from MeMe Blueprints</p>
+    <p>Course Builder Agent</p>
 </div>
 """, unsafe_allow_html=True)
 
-
-# ── Intro ────────────────────────────────────────────────────────
 st.markdown("""
-Upload the Blueprint document that MeMe produced and DeDe will build a 
-Canvas-importable `.imscc` file. For **UPDATE mode**, also upload the 
-original course export — DeDe will merge MeMe's changes while preserving 
-untouched content.
+Upload your Canvas course export and MeMe's GMO document. DeDe will apply 
+structural changes, content rewrites, new pages, new assignments, and 
+design styling — then give you an updated `.imscc` to import back into Canvas.
 """)
 
-
-# ── Step 1: Blueprint ───────────────────────────────────────────
-st.markdown('<p class="section-header">Step 1 — Upload the MeMe Blueprint</p>',
-            unsafe_allow_html=True)
-
-blueprint_file = st.file_uploader(
-    label="Upload the Blueprint (.md) generated by MeMe",
-    type=["md", "txt"],
-    help="This is the filled Blueprint document from MeMe's consultation.",
-    label_visibility="collapsed",
-)
-
-if blueprint_file is None:
-    st.info("Upload a Blueprint `.md` file to get started.")
+# ── Step 1: IMSCC ───────────────────────────────────────────────
+st.markdown('<p class="section-header">Step 1 — Upload your course export</p>', unsafe_allow_html=True)
+imscc_file = st.file_uploader("Upload .imscc", type=["imscc", "zip"], label_visibility="collapsed")
+if not imscc_file:
+    st.info("Upload a .imscc file to get started.")
     st.stop()
 
+# ── Step 2: GMO ─────────────────────────────────────────────────
+st.markdown('<p class="section-header">Step 2 — MeMe\'s GMO document (optional)</p>', unsafe_allow_html=True)
+st.markdown("Paste the GMO or upload the `.md` file MeMe generated.")
+gmo_text = st.text_area("Paste GMO", height=200, placeholder="# FINAL CONSOLIDATED GMO...", label_visibility="collapsed")
+gmo_file = st.file_uploader("Or upload GMO (.md)", type=["md", "txt"], label_visibility="collapsed")
+if gmo_file:
+    gmo_text = gmo_file.read().decode("utf-8", errors="ignore")
+    st.success(f"Loaded GMO: {len(gmo_text):,} characters")
 
-# ── Step 2: Original IMSCC (optional for UPDATE mode) ──────────
-st.markdown('<p class="section-header">Step 2 — Original course export (optional)</p>',
-            unsafe_allow_html=True)
-
-st.markdown(
-    "For **UPDATE mode**, upload the original Canvas `.imscc` export. "
-    "DeDe will merge Blueprint changes into it, preserving content that "
-    "MeMe didn't change. Skip this for a **FULL BUILD** from scratch."
-)
-
-original_file = st.file_uploader(
-    label="Upload original Canvas .imscc export (for UPDATE mode)",
-    type=["imscc", "zip"],
-    help="Optional. If provided, DeDe builds in UPDATE mode — merging changes into the original.",
-    label_visibility="collapsed",
-)
-
-
-# ── Step 2.5: Style Selection ───────────────────────────────────
-st.markdown('<p class="section-header">Design Style</p>',
-            unsafe_allow_html=True)
-
-st.markdown(
-    "Choose a visual design template for homepage, module overview, and "
-    "assignment pages. Select **No Styling** for plain Canvas HTML."
-)
-
+# ── Step 3: Style ───────────────────────────────────────────────
+st.markdown('<p class="section-header">Step 3 — Design style</p>', unsafe_allow_html=True)
 style_options = {v: k for k, v in STYLES.items()}
-selected_style_label = st.selectbox(
-    "Design style",
-    options=list(style_options.keys()),
-    index=0,
-    label_visibility="collapsed",
-)
-selected_style = style_options[selected_style_label]
-
+selected_label = st.selectbox("Design style", list(style_options.keys()), index=0, label_visibility="collapsed")
+selected_style = style_options[selected_label]
 if selected_style != 'none':
-    st.info(f"🎨 **{selected_style_label}** will be applied to homepage, module overview, and assignment pages.")
+    st.info(f"🎨 **{selected_label}** will be applied to homepage, overview, and assignment pages.")
 
+# ── Step 4: API Key ─────────────────────────────────────────────
+api_key = None
+has_content = any(a in gmo_text.upper() for a in ['CREATE_PAGE', 'REWRITE_CONTENT', 'CREATE_ASSIGNMENT', 'CREATE_SECTION']) if gmo_text else False
+if has_content:
+    st.markdown('<p class="section-header">Step 4 — API key (required for content changes)</p>', unsafe_allow_html=True)
+    api_key = None
+    try: api_key = st.secrets.get("ANTHROPIC_API_KEY", None)
+    except: pass
+    if api_key:
+        st.success("API key loaded from secrets.")
+    else:
+        api_key = st.text_input("Anthropic API Key", type="password", placeholder="sk-ant-...", label_visibility="collapsed")
+        if not api_key:
+            st.warning("Content changes will be skipped without an API key.")
 
-# ── Step 3: Parse & Validate ────────────────────────────────────
-st.markdown('<p class="section-header">Step 3 — Build</p>',
-            unsafe_allow_html=True)
+# ── Preview ─────────────────────────────────────────────────────
+imscc_bytes = imscc_file.read()
+try:
+    preview = read_imscc(imscc_bytes)
+    st.markdown('<p class="section-header">Original course</p>', unsafe_allow_html=True)
+    st.markdown(f"### {preview['identity'].get('title', 'Unknown')} — {preview['identity'].get('code', '')}")
+    c1, c2, c3, c4 = st.columns(4)
+    for col, val, label in [(c1, len(preview['modules']), 'Modules'), (c2, len(preview['assignments']), 'Assignments'),
+                             (c3, len(preview['wiki_pages']), 'Pages'), (c4, len(preview['grading_groups']), 'Grade Groups')]:
+        with col:
+            st.markdown(f'<div class="stat-card"><div class="stat-number">{val}</div><div class="stat-label">{label}</div></div>', unsafe_allow_html=True)
 
-build_button = st.button("🔨  Build Course", type="primary", use_container_width=True)
-
-if not build_button and "last_build" not in st.session_state:
+    # Show planned changes
+    if gmo_text:
+        changes, _ = parse_gmo(gmo_text)
+        structural = [c for c in changes if c['action'] not in LLM_ACTIONS]
+        content = [c for c in changes if c['action'] in LLM_ACTIONS]
+        st.markdown("")
+        if structural:
+            st.markdown(f"🔧 **{len(structural)}** structural change(s) (no AI needed)")
+        if content:
+            st.markdown(f"🧠 **{len(content)}** content change(s) (AI-powered)")
+        if selected_style != 'none':
+            restyle_count = sum(1 for t in preview['page_types'].values() if t in ('homepage','overview')) + len(preview['assignments'])
+            st.markdown(f"🎨 **{restyle_count}** pages to restyle")
+except Exception as e:
+    st.error(f"Could not read IMSCC: {e}")
     st.stop()
 
-# Cache key
-bp_id = f"{blueprint_file.name}_{blueprint_file.size}"
-orig_id = f"{original_file.name}_{original_file.size}" if original_file else "none"
-cache_key = f"{bp_id}_{orig_id}_{selected_style}"
+# ── Build ────────────────────────────────────────────────────────
+st.markdown('<p class="section-header">Build</p>', unsafe_allow_html=True)
+build_btn = st.button("🏗️  Build Modified Course", type="primary", use_container_width=True)
 
-if build_button or st.session_state.get("last_build_key") != cache_key:
+if not build_btn and "last_build" not in st.session_state:
+    st.stop()
 
-    with st.spinner("Parsing blueprint and building IMSCC..."):
-        try:
-            from io import StringIO
-            import tempfile
+cache_key = f"{imscc_file.name}_{imscc_file.size}_{selected_style}_{len(gmo_text or '')}"
+if build_btn or st.session_state.get("last_key") != cache_key:
+    progress = st.progress(0, text="Starting...")
+    steps = [0]
+    def cb(msg):
+        steps[0] += 1
+        progress.progress(min(steps[0]/15, 0.99), text=msg)
+    try:
+        out_bytes, log = run_dede(imscc_bytes, gmo_text=gmo_text or '', style=selected_style,
+                                   api_key=api_key or None, progress_callback=cb)
+        progress.progress(1.0, text="✅ Build complete!")
+        st.session_state["last_build"] = {"bytes": out_bytes, "log": log, "filename": imscc_file.name, "style": selected_style}
+        st.session_state["last_key"] = cache_key
+    except Exception as e:
+        st.error(f"Build failed: {e}")
+        with st.expander("Error details"): st.code(traceback.format_exc())
+        st.stop()
 
-            log_capture = StringIO()
-            sys.stdout = log_capture
-
-            # Read blueprint
-            md_text = blueprint_file.read().decode("utf-8", errors="ignore")
-
-            # Parse
-            bp = parse_blueprint(md_text)
-
-            # Validate
-            warnings = validate_blueprint(bp)
-
-            # Determine build mode
-            build_mode = bp.get('build', {}).get('mode', 'FULL BUILD')
-            if original_file:
-                bp.setdefault('build', {})['mode'] = 'UPDATE'
-                build_mode = 'UPDATE'
-
-            # Build into temp file
-            with tempfile.NamedTemporaryFile(suffix='.imscc', delete=False) as tmp:
-                tmp_path = tmp.name
-
-            # For UPDATE mode, write original IMSCC to a temp file too
-            original_path = None
-            if original_file and build_mode == 'UPDATE':
-                orig_bytes = original_file.read()
-                with tempfile.NamedTemporaryFile(suffix='.imscc', delete=False) as otmp:
-                    otmp.write(orig_bytes)
-                    original_path = otmp.name
-
-            build_imscc(bp, tmp_path, original_imscc_path=original_path, style=selected_style)
-
-            # Read built file into memory
-            with open(tmp_path, 'rb') as f:
-                built_bytes = f.read()
-
-            # Clean up temp files
-            os.unlink(tmp_path)
-            if original_path:
-                os.unlink(original_path)
-
-            sys.stdout = sys.__stdout__
-            log_output = log_capture.getvalue()
-
-            # Cache result
-            st.session_state["last_build"] = {
-                "built_bytes":  built_bytes,
-                "bp":           bp,
-                "warnings":     warnings,
-                "build_mode":   build_mode,
-                "style":        selected_style,
-                "log":          log_output,
-                "bp_filename":  blueprint_file.name,
-            }
-            st.session_state["last_build_key"] = cache_key
-
-        except Exception as e:
-            sys.stdout = sys.__stdout__
-            st.error(f"Build failed: {e}")
-            with st.expander("Error details"):
-                st.code(traceback.format_exc())
-            st.stop()
-
-
-# ── Display results ─────────────────────────────────────────────
+# ── Results ──────────────────────────────────────────────────────
 result = st.session_state.get("last_build")
-if not result:
-    st.stop()
+if not result: st.stop()
 
-bp         = result["bp"]
-warnings   = result["warnings"]
-build_mode = result["build_mode"]
+st.success("✅ Build complete!")
+base = os.path.splitext(result["filename"])[0]
+sfx = f"_{result['style']}" if result['style'] != 'none' else ''
+kb = len(result["bytes"]) / 1024
 
-st.success(f"✅ Build complete! ({build_mode})")
-
-st.markdown('<p class="section-header">Build Summary</p>', unsafe_allow_html=True)
-
-# ── Course identity ──
-course = bp.get("course", {})
-title  = course.get("Course Title", "Unknown")
-code   = course.get("Course Code", "Unknown")
-st.markdown(f"### {title} — {code}")
-start = course.get("Course Start Date", "Not set")
-style_label = STYLES.get(result.get("style", "none"), "No Styling")
-st.caption(f"Start: {start} · Mode: {build_mode} · Style: {style_label}")
-
-# ── Stat cards ──
-col1, col2, col3, col4, col5 = st.columns(5)
-with col1:
-    st.markdown(f'<div class="stat-card"><div class="stat-number">{len(bp.get("modules",[]))}</div>'
-                f'<div class="stat-label">Modules</div></div>', unsafe_allow_html=True)
-with col2:
-    st.markdown(f'<div class="stat-card"><div class="stat-number">{len(bp.get("assignments",[]))}</div>'
-                f'<div class="stat-label">Assignments</div></div>', unsafe_allow_html=True)
-with col3:
-    st.markdown(f'<div class="stat-card"><div class="stat-number">{len(bp.get("clos",[]))}</div>'
-                f'<div class="stat-label">CLOs</div></div>', unsafe_allow_html=True)
-with col4:
-    st.markdown(f'<div class="stat-card"><div class="stat-number">{len(bp.get("grading",[]))}</div>'
-                f'<div class="stat-label">Grade Groups</div></div>', unsafe_allow_html=True)
-with col5:
-    total_w = sum(g.get("weight", 0) for g in bp.get("grading", []))
-    st.markdown(f'<div class="stat-card"><div class="stat-number">{total_w:.0f}%</div>'
-                f'<div class="stat-label">Total Weight</div></div>', unsafe_allow_html=True)
-
-st.markdown("")
-
-# ── Warnings ──
-if warnings:
-    for w in warnings:
-        st.warning(f"⚠️ {w}")
-else:
-    st.markdown('<span class="badge-ok">All validation checks passed</span>',
-                unsafe_allow_html=True)
-
-# ── Module detail ──
-with st.expander(f"📦 Modules ({len(bp.get('modules',[]))})"):
-    for mod in bp.get("modules", []):
-        mlo_count = len(mod.get("mlos", []))
-        assign_count = len(mod.get("assignments", []))
-        st.markdown(f"**Module {mod.get('number','?')}: {mod.get('title','')}** "
-                    f"— {mlo_count} MLOs, {assign_count} assignments")
-
-with st.expander(f"📝 Assignments ({len(bp.get('assignments',[]))})"):
-    for a in bp.get("assignments", []):
-        pts = a.get("points", "?")
-        grp = a.get("group", "?")
-        st.markdown(f"**{a.get('title','')}** — {pts} pts, Group: {grp}")
-
-
-# ── Download ─────────────────────────────────────────────────────
-st.markdown('<p class="section-header">Step 4 — Download & Import</p>',
-            unsafe_allow_html=True)
-
-base_name     = os.path.splitext(result["bp_filename"])[0]
-download_name = f"{base_name}_built.imscc"
-
-built_kb = len(result["built_bytes"]) / 1024
-
-st.download_button(
-    label=f"⬇  Download IMSCC ({built_kb:.1f} KB)",
-    data=result["built_bytes"],
-    file_name=download_name,
-    mime="application/zip",
-    use_container_width=True,
-)
+st.download_button(f"⬇  Download Modified Course ({kb:.1f} KB)", data=result["bytes"],
+    file_name=f"{base}_modified{sfx}.imscc", mime="application/zip", use_container_width=True)
 
 st.markdown("""
 **To import into Canvas:**
-1. Open your course in Canvas
-2. Go to **Settings** → **Import Course Content**
-3. Select **Canvas Course Export Package** as the content type
-4. Upload the `.imscc` file
-5. Click **Import**
+1. Open your course → **Settings** → **Import Course Content**
+2. Select **Canvas Course Export Package**
+3. Upload the `.imscc` file → **Import**
 """)
 
-
-# ── Build log ────────────────────────────────────────────────────
 with st.expander("📋 Build log"):
-    st.code(result["log"], language=None)
+    for line in result["log"]: st.text(line)
 
-
-# ── Footer ──────────────────────────────────────────────────────
 st.markdown("---")
-st.caption(
-    "DeDe Course Builder v2.0 · Part of the CeCe / MeMe / DeDe "
-    "Instructional Design Suite · Developed for TOPkit / Florida SUS"
-)
+st.caption("DeDe v4 · Course Builder Agent · CeCe / MeMe / DeDe Suite · TOPkit / Florida SUS")
